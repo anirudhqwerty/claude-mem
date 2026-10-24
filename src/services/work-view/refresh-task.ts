@@ -18,6 +18,7 @@ import type { AgentTask, AnswerSchema, AskAgent, StepModels } from '../agent-run
 import type { UsableAgentId } from '../agent-runner/detect.js';
 import { runCommand } from '../agent-runner/detect.js';
 import { writeOwnerPromptsFile, type OwnerPromptsFile } from '../prompt-import/owner-prompts-file.js';
+import { resolvePythonCommand } from './python.js';
 import { readGoals, runCli, validateGroupingAnswer, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
 
 /** claude-mem MCP tools a refresh may call: reads only. Saves go through the skills' scripts and their
@@ -124,6 +125,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
     exported = await writeOwnerPrompts(goalsFolder, since);
   };
 
+  let python: ReturnType<typeof resolvePythonCommand> | undefined;
   const steps: StepTiming[] = [];
   const run = async (askBackend: AskAgent, agent: UsableAgentId): Promise<string> => {
     const runDir = join(ledgerDir, 'agent-runs', randomBytes(6).toString('hex'));
@@ -154,9 +156,10 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       finally { database.close(); }
       return output;
     };
-    /** Runs a skill script; resolves with its output. */
+    /** Resolve once per refresh; only discovery tries another interpreter, never script execution. */
     const runScript = async (args: string[]) => {
-      const result = await runCommand(options.spawnImpl ?? spawn, 'python3', args, { cwd: dataDir, env: { ...process.env, CLAUDE_MEM_INTERNAL: '1' } });
+      const interpreter = await (python ??= resolvePythonCommand(process.platform, options.spawnImpl ?? spawn));
+      const result = await runCommand(options.spawnImpl ?? spawn, interpreter.command, [...interpreter.args, ...args], { cwd: dataDir, env: { ...process.env, CLAUDE_MEM_INTERNAL: '1', PYTHONUTF8: '1' } });
       if (result.spawnError) throw result.spawnError;
       if (result.exitCode !== 0) throw new Error(`${args[0].split('/').pop()} exited ${result.exitCode}: ${`${result.stdout}\n${result.stderr}`.trim().slice(-800)}`);
       return result.stdout;

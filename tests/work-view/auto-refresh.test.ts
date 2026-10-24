@@ -312,7 +312,7 @@ describe('incremental owner goals', () => {
       const child: any = new EventEmitter();
       child.stdout = Object.assign(new EventEmitter(), { setEncoding() {} }); child.stderr = Object.assign(new EventEmitter(), { setEncoding() {} });
       if (args[0] === '-c') {
-        queueMicrotask(() => child.emit('close', 0));
+        queueMicrotask(() => { child.stdout.emit('data', 'claude-mem-python\n'); child.emit('close', 0); });
         return child;
       }
       const call: { args: string[]; goals?: any } = { args };
@@ -373,21 +373,57 @@ describe('incremental owner goals', () => {
       saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
       writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
       const calls: Array<{ args: string[]; goals?: any }> = [];
-      const python = fakePython(0, calls);
+      const python = fakePython(calls);
       const scripts: string[] = [];
-      setFakeSpawn(((command: string, args: string[], options: any) => {
+      const tried: string[] = [];
+      let probes = 0;
+      const spawnImpl = ((command: string, args: string[], options: any) => {
+        if (args[0] === '-c') tried.push(command);
         if (command !== 'python') throw Object.assign(new Error(`Executable not found: ${command}`), { code: 'ENOENT' });
+        if (args[0] === '-c') probes++;
         if (args[0] !== '-c') {
           scripts.push(command);
           expect(options.env.PYTHONUTF8).toBe('1');
           expect(options.env.CLAUDE_MEM_INTERNAL).toBe('1');
         }
         return python(command, args, options);
-      }) as any);
-      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
+      }) as any;
+      const sinceMinutes: Array<string | null> = [];
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl, writeOwnerPrompts: fakeOwnerPrompts(0, sinceMinutes) });
+      await task.prepare!();
       expect(await task.run(async () => { throw new Error('no agent needed'); }, 'codex')).toBe('goals unchanged.');
+      expect(scripts).toEqual(['python']);
+      expect(sinceMinutes).toHaveLength(1);
+      expect(probes).toBe(1);
+      expect(calls[0].goals).toMatchObject({ priorities: [{ title: 'Ship cards' }] });
+      // The runner can try a second agent with the same prepared refresh task.
+      expect(await task.run(async () => { throw new Error('no agent needed'); }, 'gemini')).toBe('goals unchanged.');
       expect(scripts).toEqual(['python', 'python']);
-      expect(calls[1].goals).toMatchObject({ priorities: [{ title: 'Ship cards' }] });
+      expect(probes).toBe(1);
+      expect(tried).toEqual(['python3', 'python']);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('does not retry a failing skill script with another interpreter', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-python-'));
+    try {
+      const database = fixtureDatabase();
+      const scripts: string[] = [];
+      const spawnImpl = ((command: string, args: string[]) => {
+        const child: any = new EventEmitter();
+        child.stdout = Object.assign(new EventEmitter(), { setEncoding() {} });
+        child.stderr = Object.assign(new EventEmitter(), { setEncoding() {} });
+        queueMicrotask(() => {
+          if (args[0] === '-c') child.stdout.emit('data', 'claude-mem-python\n');
+          else { scripts.push(command); child.stderr.emit('data', 'save failed'); }
+          child.emit('close', args[0] === '-c' ? 0 : 7);
+        });
+        return child;
+      }) as any;
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl, writeOwnerPrompts: async (folder, sinceMinute) => ({ ...await fakeOwnerPrompts(0, [])(folder, sinceMinute), ownerPrompts: 0 }) });
+      await task.prepare!();
+      await expect(task.run(async () => { throw new Error('no agent needed'); }, 'codex')).rejects.toThrow('exited 7: save failed');
+      expect(scripts).toEqual(['python3']);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
