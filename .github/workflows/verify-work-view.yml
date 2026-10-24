@@ -5,14 +5,50 @@ on:
 permissions:
   contents: read
 jobs:
-  regression:
+  linux:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: e4c8c4a
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - uses: oven-sh/setup-bun@v2
       - run: npm install --no-audit --no-fund
-      - run: bun test tests/work-view/auto-refresh.test.ts --test-name-pattern 'refreshes goals with python when python3 is not installed'
+      - run: sudo apt-get update && sudo apt-get install -y fish
+      - run: bun test tests/work-view tests/agent-runner
+      - run: npm run typecheck
+      - run: npm run lint:hook-io && npm run lint:spawn-env && npm run test:lanes:check
+      - run: npm run build
+      - run: npm test
+  windows-python-only:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: e4c8c4a
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm install --no-audit --no-fund
+      - name: Run with python.exe only and a legacy code page
+        shell: pwsh
+        run: |
+          $bun = (Get-Command bun).Source
+          $pythonDir = $env:pythonLocation
+          $python3 = Join-Path $pythonDir 'python3.exe'
+          if (Test-Path $python3) { Rename-Item -LiteralPath $python3 -NewName 'python3.disabled.exe' }
+          $env:PATH = "$pythonDir;$(Split-Path $bun);$env:SystemRoot\System32;$env:SystemRoot"
+          $env:PYTHONUTF8 = '0'
+          if (Get-Command python3 -ErrorAction SilentlyContinue) { throw 'python3 must be absent for this reproduction' }
+          & $bun test tests/work-view/python.test.ts tests/work-view/auto-refresh.test.ts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $bun test tests/work-view/skill-scripts-python.test.ts --test-name-pattern 'UTF-8|leaves text the owner marked private'
+          exit $LASTEXITCODE
