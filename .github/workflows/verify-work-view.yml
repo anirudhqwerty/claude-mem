@@ -11,14 +11,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: e4c8c4a
+          ref: e4c8c4a09c5bbde2306132d61182eccc27f7f6c0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - uses: oven-sh/setup-bun@v2
       - run: npm install --no-audit --no-fund
       - run: sudo apt-get update && sudo apt-get install -y fish
-      - run: bun test tests/work-view tests/agent-runner
+      - run: bun test tests/work-view tests/services/agent-runner
       - run: npm run typecheck
       - run: npm run lint:hook-io && npm run lint:spawn-env && npm run test:lanes:check
       - run: npm run build
@@ -29,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: e4c8c4a
+          ref: e4c8c4a09c5bbde2306132d61182eccc27f7f6c0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
