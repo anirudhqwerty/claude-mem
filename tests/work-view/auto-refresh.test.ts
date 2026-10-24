@@ -311,6 +311,10 @@ describe('incremental owner goals', () => {
     return ((_command: string, args: string[]) => {
       const child: any = new EventEmitter();
       child.stdout = Object.assign(new EventEmitter(), { setEncoding() {} }); child.stderr = Object.assign(new EventEmitter(), { setEncoding() {} });
+      if (args[0] === '-c') {
+        queueMicrotask(() => child.emit('close', 0));
+        return child;
+      }
       const call: { args: string[]; goals?: any } = { args };
       calls.push(call);
       queueMicrotask(() => {
@@ -359,6 +363,31 @@ describe('incremental owner goals', () => {
       await task.prepare!();
       expect(await task.run(async () => { throw new Error('empty input must not call a model'); }, 'codex')).toBe('goals empty.');
       expect(calls[0].goals).toMatchObject({ generated_at: new Date(NOW).toISOString(), source_prompt_count: 0, priorities: [], open_asks: [] });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('refreshes goals with python when python3 is not installed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-python-'));
+    try {
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
+      const calls: Array<{ args: string[]; goals?: any }> = [];
+      const python = fakePython(0, calls);
+      const scripts: string[] = [];
+      setFakeSpawn(((command: string, args: string[], options: any) => {
+        if (command !== 'python') throw Object.assign(new Error(`Executable not found: ${command}`), { code: 'ENOENT' });
+        if (args[0] !== '-c') {
+          scripts.push(command);
+          expect(options.env.PYTHONUTF8).toBe('1');
+          expect(options.env.CLAUDE_MEM_INTERNAL).toBe('1');
+        }
+        return python(command, args, options);
+      }) as any);
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
+      expect(await task.run(async () => { throw new Error('no agent needed'); }, 'codex')).toBe('goals unchanged.');
+      expect(scripts).toEqual(['python', 'python']);
+      expect(calls[1].goals).toMatchObject({ priorities: [{ title: 'Ship cards' }] });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
