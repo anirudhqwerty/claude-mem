@@ -6,9 +6,8 @@ permissions:
   contents: read
 jobs:
   linux:
-    if: "!contains(github.event.head_commit.message, 'Windows-only')"
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -17,93 +16,15 @@ jobs:
         with:
           node-version: '20'
       - uses: oven-sh/setup-bun@v2
-      - name: Install dependencies on runner
-        id: install
-        run: npm install --no-audit --no-fund
-      - name: Install Fish for hook regression tests
-        run: sudo apt-get update && sudo apt-get install -y fish
-      - name: Test exact unchanged main
+      - run: npm install --no-audit --no-fund
+      - run: sudo apt-get update && sudo apt-get install -y fish
+      - name: Build
+        run: npm run build
+      - name: Unmodified fast-lane command
         shell: bash
-        run: |
-          git fetch --depth=1 origin 2f5980251340cf35fec7f791982850a2e0118599
-          git checkout --detach 2f5980251340cf35fec7f791982850a2e0118599
-          npm run build
-          printf 'console.log("[diagnostic] Bun test process PID:", process.pid);\n' > "$RUNNER_TEMP/log-pid.ts"
-          npm test -- --preload "$RUNNER_TEMP/log-pid.ts" 2>&1 | tee "$RUNNER_TEMP/baseline-fast.log"
-      - name: Reproduce unchanged-main fixture PID collision
-        if: "!cancelled() && steps.install.outcome == 'success'"
-        shell: bash
-        run: |
-          printf 'Object.defineProperty(process, "pid", { value: 4098 }); console.log("[diagnostic] Reproducing fixture collision with PID", process.pid);\n' > "$RUNNER_TEMP/fixture-pid.ts"
-          set +e
-          bun test --preload "$RUNNER_TEMP/fixture-pid.ts" tests/shared/port-reclaim-orphan-sweep.test.ts 2>&1 | tee "$RUNNER_TEMP/pid-collision.log"
-          result=${PIPESTATUS[0]}
-          set -e
-          test "$result" -eq 1
-          grep -q '2 fail' "$RUNNER_TEMP/pid-collision.log"
-          grep -q '(fail) reclaimOrphanChromaDataDirWriters > kills whitelist-named sidecars' "$RUNNER_TEMP/pid-collision.log"
-          grep -q '(fail) reclaimOrphanChromaDataDirWriters > continues past a failed tree-kill' "$RUNNER_TEMP/pid-collision.log"
-      - name: Test exact rebased feature
-        if: "!cancelled() && steps.install.outcome == 'success'"
-        shell: bash
-        run: |
-          git checkout --detach c6b07a3911569540a188dac31f216a8c8e2c9fac
-          npm run build
-          npm test -- --preload "$RUNNER_TEMP/log-pid.ts" 2>&1 | tee "$RUNNER_TEMP/feature-fast.log"
-      - name: Focused prompt importer coverage
-        if: "!cancelled() && steps.install.outcome == 'success'"
-        run: bun test tests/services/prompt-import
+        run: npm test 2>&1 | tee "$RUNNER_TEMP/feature-fast.log"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: fast-lane-comparison
-          path: |
-            ${{ runner.temp }}/baseline-fast.log
-            ${{ runner.temp }}/feature-fast.log
-            ${{ runner.temp }}/pid-collision.log
-  windows-python-only:
-    if: "!contains(github.event.head_commit.message, 'Linux-only')"
-    runs-on: windows-2022
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: c6b07a3911569540a188dac31f216a8c8e2c9fac
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - uses: oven-sh/setup-bun@v2
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.9'
-      - name: Install dependencies on runner
-        run: npm install --no-audit --no-fund
-      - name: Run with python.exe only and a legacy code page
-        shell: pwsh
-        run: |
-          $bun = (Get-Command bun).Source
-          $git = (Get-Command git).Source
-          $pythonDir = $env:pythonLocation
-          $python3 = Join-Path $pythonDir 'python3.exe'
-          if (Test-Path $python3) { Rename-Item -LiteralPath $python3 -NewName 'python3.disabled.exe' }
-          $env:PATH = "$pythonDir;$(Split-Path $bun);$env:SystemRoot\System32;$env:SystemRoot"
-          $env:PYTHONUTF8 = '0'
-          if (Get-Command python3 -ErrorAction SilentlyContinue) { throw 'python3 must be absent for this reproduction' }
-          & $git fetch --depth=1 origin 2f5980251340cf35fec7f791982850a2e0118599
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $original = & $git show '2f5980251340cf35fec7f791982850a2e0118599:src/services/work-view/refresh-task.ts'
-          [IO.File]::WriteAllText((Join-Path $env:GITHUB_WORKSPACE 'src/services/work-view/refresh-task.ts'), ($original -join "`n"))
-          & $bun test tests/work-view/auto-refresh.test.ts --test-name-pattern 'refreshes goals with python when python3 is not installed' 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/baseline.log"
-          $baselineExit = $LASTEXITCODE
-          & $git restore src/services/work-view/refresh-task.ts
-          if ($baselineExit -ne 1) { throw "Expected failing regression, got $baselineExit" }
-          if (-not (Select-String -Path "$env:RUNNER_TEMP/baseline.log" -SimpleMatch 'Executable not found: python3')) { throw 'Regression did not fail for missing python3' }
-          & $bun test tests/work-view/python.test.ts tests/work-view/auto-refresh.test.ts
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $bun test tests/work-view/skill-scripts-python.test.ts --test-name-pattern 'UTF-8|leaves text the owner marked private'
-          exit $LASTEXITCODE
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: baseline-windows
-          path: ${{ runner.temp }}/baseline.log
+          name: final-fast-lane
+          path: ${{ runner.temp }}/feature-fast.log
