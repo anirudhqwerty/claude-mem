@@ -6,7 +6,7 @@ permissions:
   contents: read
 jobs:
   linux:
-    if: github.event.head_commit.message != 'ci: correct restricted Windows PATH'
+    if: "!contains(github.event.head_commit.message, 'Windows-only')"
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -25,13 +25,13 @@ jobs:
       - name: Confirm current main still fails without python3
         shell: bash
         run: |
-          & $git fetch --depth=1 origin 2f5980251340cf35fec7f791982850a2e0118599
+          git fetch --depth=1 origin 2f5980251340cf35fec7f791982850a2e0118599
           git show 2f5980251340cf35fec7f791982850a2e0118599:src/services/work-view/refresh-task.ts > src/services/work-view/refresh-task.ts
           set +e
           bun test tests/work-view/auto-refresh.test.ts --test-name-pattern 'refreshes goals with python when python3 is not installed' 2>&1 | tee "$RUNNER_TEMP/baseline.log"
           result=${PIPESTATUS[0]}
           set -e
-          & $git restore src/services/work-view/refresh-task.ts
+          git restore src/services/work-view/refresh-task.ts
           test "$result" -eq 1
           grep -q 'Executable not found: python3' "$RUNNER_TEMP/baseline.log"
           grep -q '1 fail' "$RUNNER_TEMP/baseline.log"
