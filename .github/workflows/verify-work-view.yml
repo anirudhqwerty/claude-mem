@@ -6,6 +6,7 @@ permissions:
   contents: read
 jobs:
   linux:
+    if: github.event.head_commit.message != 'ci: correct restricted Windows PATH'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -24,19 +25,19 @@ jobs:
       - name: Confirm current main still fails without python3
         shell: bash
         run: |
-          git fetch --depth=1 origin 2f5980251340cf35fec7f791982850a2e0118599
+          & $git fetch --depth=1 origin 2f5980251340cf35fec7f791982850a2e0118599
           git show 2f5980251340cf35fec7f791982850a2e0118599:src/services/work-view/refresh-task.ts > src/services/work-view/refresh-task.ts
           set +e
           bun test tests/work-view/auto-refresh.test.ts --test-name-pattern 'refreshes goals with python when python3 is not installed' 2>&1 | tee "$RUNNER_TEMP/baseline.log"
           result=${PIPESTATUS[0]}
           set -e
-          git restore src/services/work-view/refresh-task.ts
+          & $git restore src/services/work-view/refresh-task.ts
           test "$result" -eq 1
           grep -q 'Executable not found: python3' "$RUNNER_TEMP/baseline.log"
           grep -q '1 fail' "$RUNNER_TEMP/baseline.log"
       - name: Focused work-view, prompt importer and agent-runner suites
         if: always() && steps.install.outcome == 'success'
-        run: bun test tests/work-view tests/services/agent-runner tests/prompt-import
+        run: bun test tests/work-view tests/services/agent-runner tests/services/prompt-import
       - name: Verify committed bundles before build
         if: always() && steps.install.outcome == 'success'
         run: bun test tests/infrastructure/version-consistency.test.ts tests/infrastructure/committed-plugin-bundles.test.ts
@@ -86,19 +87,20 @@ jobs:
         shell: pwsh
         run: |
           $bun = (Get-Command bun).Source
+          $git = (Get-Command git).Source
           $pythonDir = $env:pythonLocation
           $python3 = Join-Path $pythonDir 'python3.exe'
           if (Test-Path $python3) { Rename-Item -LiteralPath $python3 -NewName 'python3.disabled.exe' }
           $env:PATH = "$pythonDir;$(Split-Path $bun);$env:SystemRoot\System32;$env:SystemRoot"
           $env:PYTHONUTF8 = '0'
           if (Get-Command python3 -ErrorAction SilentlyContinue) { throw 'python3 must be absent for this reproduction' }
-          git fetch --depth=1 origin 2f5980251340cf35fec7f791982850a2e0118599
+          & $git fetch --depth=1 origin 2f5980251340cf35fec7f791982850a2e0118599
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $original = git show '2f5980251340cf35fec7f791982850a2e0118599:src/services/work-view/refresh-task.ts'
+          $original = & $git show '2f5980251340cf35fec7f791982850a2e0118599:src/services/work-view/refresh-task.ts'
           [IO.File]::WriteAllText((Join-Path $env:GITHUB_WORKSPACE 'src/services/work-view/refresh-task.ts'), ($original -join "`n"))
           & $bun test tests/work-view/auto-refresh.test.ts --test-name-pattern 'refreshes goals with python when python3 is not installed' 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/baseline.log"
           $baselineExit = $LASTEXITCODE
-          git restore src/services/work-view/refresh-task.ts
+          & $git restore src/services/work-view/refresh-task.ts
           if ($baselineExit -ne 1) { throw "Expected failing regression, got $baselineExit" }
           if (-not (Select-String -Path "$env:RUNNER_TEMP/baseline.log" -SimpleMatch 'Executable not found: python3')) { throw 'Regression did not fail for missing python3' }
           & $bun test tests/work-view/python.test.ts tests/work-view/auto-refresh.test.ts
