@@ -7,24 +7,65 @@ permissions:
 jobs:
   linux:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: c6b07a3911569540a188dac31f216a8c8e2c9fac
+          ref: 6ff54ad775444a3bc324b7228e78feb866bae123
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
       - uses: oven-sh/setup-bun@v2
-      - run: npm install --no-audit --no-fund
-      - run: sudo apt-get update && sudo apt-get install -y fish
-      - name: Build
-        run: npm run build
-      - name: Unmodified fast-lane command
+      - name: Install dependencies
+        id: install
+        run: npm install --no-audit --no-fund
+      - name: Install Fish for hook tests
+        run: sudo apt-get update && sudo apt-get install -y fish
+      - name: Confirm current-main Windows regression
         shell: bash
-        run: npm test 2>&1 | tee "$RUNNER_TEMP/feature-fast.log"
+        run: |
+          git fetch --depth=1 origin 2d84dfa04bbe7289cbd7e064ab6b3d6f3dfdfe45
+          git show 2d84dfa04bbe7289cbd7e064ab6b3d6f3dfdfe45:src/services/work-view/refresh-task.ts > src/services/work-view/refresh-task.ts
+          set +e
+          bun test tests/work-view/auto-refresh.test.ts --test-name-pattern 'refreshes goals with python when python3 is not installed' 2>&1 | tee "$RUNNER_TEMP/baseline.log"
+          result=${PIPESTATUS[0]}
+          set -e
+          git restore src/services/work-view/refresh-task.ts
+          test "$result" -eq 1
+          grep -q 'Executable not found: python3' "$RUNNER_TEMP/baseline.log"
+          grep -q '1 fail' "$RUNNER_TEMP/baseline.log"
+      - name: Focused work-view, agent runner and prompt importer suites
+        if: "!cancelled() && steps.install.outcome == 'success'"
+        run: bun test tests/work-view tests/services/agent-runner tests/services/prompt-import
+      - name: Committed plugin bundles before rebuilding
+        if: "!cancelled() && steps.install.outcome == 'success'"
+        run: bun test tests/infrastructure/version-consistency.test.ts tests/infrastructure/committed-plugin-bundles.test.ts
+      - name: Typecheck
+        if: "!cancelled() && steps.install.outcome == 'success'"
+        run: npm run typecheck
+      - name: Lint and lane coverage
+        if: "!cancelled() && steps.install.outcome == 'success'"
+        run: npm run lint:hook-io && npm run lint:spawn-env && npm run test:lanes:check
+      - name: Build
+        if: "!cancelled() && steps.install.outcome == 'success'"
+        run: npm run build
+      - name: Fast suite
+        if: "!cancelled() && steps.install.outcome == 'success'"
+        shell: bash
+        run: npm test 2>&1 | tee "$RUNNER_TEMP/fast.log"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: final-fast-lane
-          path: ${{ runner.temp }}/feature-fast.log
+          name: current-main-regression-and-fast-suite
+          path: |
+            ${{ runner.temp }}/baseline.log
+            ${{ runner.temp }}/fast.log
+      - name: Integration suite
+        if: "!cancelled() && steps.install.outcome == 'success'"
+        run: npm run test:integration
+      - name: OpenClaw
+        if: "!cancelled() && steps.install.outcome == 'success'"
+        run: bun test openclaw
+      - name: Hermes
+        if: "!cancelled() && steps.install.outcome == 'success'"
+        run: python3 -B -m unittest discover -s tests/hermes -v
