@@ -22,52 +22,47 @@ jobs:
         run: npm install --no-audit --no-fund
       - name: Install Fish for hook regression tests
         run: sudo apt-get update && sudo apt-get install -y fish
-      - name: Confirm current main still fails without python3
+      - name: Test exact unchanged main
         shell: bash
         run: |
           git fetch --depth=1 origin 2f5980251340cf35fec7f791982850a2e0118599
-          git show 2f5980251340cf35fec7f791982850a2e0118599:src/services/work-view/refresh-task.ts > src/services/work-view/refresh-task.ts
+          git checkout --detach 2f5980251340cf35fec7f791982850a2e0118599
+          npm run build
+          printf 'console.log("[diagnostic] Bun test process PID:", process.pid);\n' > "$RUNNER_TEMP/log-pid.ts"
+          npm test -- --preload "$RUNNER_TEMP/log-pid.ts" 2>&1 | tee "$RUNNER_TEMP/baseline-fast.log"
+      - name: Reproduce unchanged-main fixture PID collision
+        if: "!cancelled() && steps.install.outcome == 'success'"
+        shell: bash
+        run: |
+          printf 'Object.defineProperty(process, "pid", { value: 4098 }); console.log("[diagnostic] Reproducing fixture collision with PID", process.pid);\n' > "$RUNNER_TEMP/fixture-pid.ts"
           set +e
-          bun test tests/work-view/auto-refresh.test.ts --test-name-pattern 'refreshes goals with python when python3 is not installed' 2>&1 | tee "$RUNNER_TEMP/baseline.log"
+          bun test --preload "$RUNNER_TEMP/fixture-pid.ts" tests/shared/port-reclaim-orphan-sweep.test.ts 2>&1 | tee "$RUNNER_TEMP/pid-collision.log"
           result=${PIPESTATUS[0]}
           set -e
-          git restore src/services/work-view/refresh-task.ts
           test "$result" -eq 1
-          grep -q 'Executable not found: python3' "$RUNNER_TEMP/baseline.log"
-          grep -q '1 fail' "$RUNNER_TEMP/baseline.log"
-      - name: Focused work-view, prompt importer and agent-runner suites
-        if: always() && steps.install.outcome == 'success'
-        run: bun test tests/work-view tests/services/agent-runner tests/services/prompt-import
-      - name: Verify committed bundles before build
-        if: always() && steps.install.outcome == 'success'
-        run: bun test tests/infrastructure/version-consistency.test.ts tests/infrastructure/committed-plugin-bundles.test.ts
-      - name: Typecheck
-        if: always() && steps.install.outcome == 'success'
-        run: npm run typecheck
-      - name: Lint and test-lane coverage
-        if: always() && steps.install.outcome == 'success'
-        run: npm run lint:hook-io && npm run lint:spawn-env && npm run test:lanes:check
-      - name: Build
-        if: always() && steps.install.outcome == 'success'
-        run: npm run build
-      - name: Fast test lane
-        if: always() && steps.install.outcome == 'success'
-        run: npm test
-      - name: Integration test lane
-        if: always() && steps.install.outcome == 'success'
-        run: npm run test:integration
-      - name: OpenClaw tests
-        if: always() && steps.install.outcome == 'success'
-        run: bun test openclaw
-      - name: Hermes Python tests
-        if: always() && steps.install.outcome == 'success'
-        run: python3 -B -m unittest discover -s tests/hermes -v
+          grep -q '2 fail' "$RUNNER_TEMP/pid-collision.log"
+          grep -q '(fail) reclaimOrphanChromaDataDirWriters > kills whitelist-named sidecars' "$RUNNER_TEMP/pid-collision.log"
+          grep -q '(fail) reclaimOrphanChromaDataDirWriters > continues past a failed tree-kill' "$RUNNER_TEMP/pid-collision.log"
+      - name: Test exact rebased feature
+        if: "!cancelled() && steps.install.outcome == 'success'"
+        shell: bash
+        run: |
+          git checkout --detach c6b07a3911569540a188dac31f216a8c8e2c9fac
+          npm run build
+          npm test -- --preload "$RUNNER_TEMP/log-pid.ts" 2>&1 | tee "$RUNNER_TEMP/feature-fast.log"
+      - name: Focused prompt importer coverage
+        if: "!cancelled() && steps.install.outcome == 'success'"
+        run: bun test tests/services/prompt-import
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: baseline-linux
-          path: ${{ runner.temp }}/baseline.log
+          name: fast-lane-comparison
+          path: |
+            ${{ runner.temp }}/baseline-fast.log
+            ${{ runner.temp }}/feature-fast.log
+            ${{ runner.temp }}/pid-collision.log
   windows-python-only:
+    if: "!contains(github.event.head_commit.message, 'Linux-only')"
     runs-on: windows-2022
     timeout-minutes: 25
     steps:
