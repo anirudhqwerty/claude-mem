@@ -7,37 +7,81 @@ permissions:
 jobs:
   linux:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c6b07a3911569540a188dac31f216a8c8e2c9fac
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies on runner
+        id: install
+        run: npm install --no-audit --no-fund
+      - name: Install Fish for hook regression tests
+        run: sudo apt-get update && sudo apt-get install -y fish
+      - name: Confirm current main still fails without python3
+        shell: bash
+        run: |
+          git fetch --depth=1 origin 2f5980251340cf35fec7f791982850a2e0118599
+          git show 2f5980251340cf35fec7f791982850a2e0118599:src/services/work-view/refresh-task.ts > src/services/work-view/refresh-task.ts
+          set +e
+          bun test tests/work-view/auto-refresh.test.ts --test-name-pattern 'refreshes goals with python when python3 is not installed' 2>&1 | tee "$RUNNER_TEMP/baseline.log"
+          result=${PIPESTATUS[0]}
+          set -e
+          git restore src/services/work-view/refresh-task.ts
+          test "$result" -eq 1
+          grep -q 'Executable not found: python3' "$RUNNER_TEMP/baseline.log"
+          grep -q '1 fail' "$RUNNER_TEMP/baseline.log"
+      - name: Focused work-view, prompt importer and agent-runner suites
+        if: always() && steps.install.outcome == 'success'
+        run: bun test tests/work-view tests/services/agent-runner tests/prompt-import
+      - name: Verify committed bundles before build
+        if: always() && steps.install.outcome == 'success'
+        run: bun test tests/infrastructure/version-consistency.test.ts tests/infrastructure/committed-plugin-bundles.test.ts
+      - name: Typecheck
+        if: always() && steps.install.outcome == 'success'
+        run: npm run typecheck
+      - name: Lint and test-lane coverage
+        if: always() && steps.install.outcome == 'success'
+        run: npm run lint:hook-io && npm run lint:spawn-env && npm run test:lanes:check
+      - name: Build
+        if: always() && steps.install.outcome == 'success'
+        run: npm run build
+      - name: Fast test lane
+        if: always() && steps.install.outcome == 'success'
+        run: npm test
+      - name: Integration test lane
+        if: always() && steps.install.outcome == 'success'
+        run: npm run test:integration
+      - name: OpenClaw tests
+        if: always() && steps.install.outcome == 'success'
+        run: bun test openclaw
+      - name: Hermes Python tests
+        if: always() && steps.install.outcome == 'success'
+        run: python3 -B -m unittest discover -s tests/hermes -v
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: baseline-linux
+          path: ${{ runner.temp }}/baseline.log
+  windows-python-only:
+    runs-on: windows-2022
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: e4c8c4a09c5bbde2306132d61182eccc27f7f6c0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - uses: oven-sh/setup-bun@v2
-      - run: npm install --no-audit --no-fund
-      - run: sudo apt-get update && sudo apt-get install -y fish
-      - run: bun test tests/work-view tests/services/agent-runner
-      - run: npm run typecheck
-      - run: npm run lint:hook-io && npm run lint:spawn-env && npm run test:lanes:check
-      - run: npm run build
-      - run: npm test
-  windows-python-only:
-    runs-on: windows-2022
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: e4c8c4a09c5bbde2306132d61182eccc27f7f6c0
+          ref: c6b07a3911569540a188dac31f216a8c8e2c9fac
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - uses: oven-sh/setup-bun@v2
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-      - run: npm install --no-audit --no-fund
+          python-version: '3.9'
+      - name: Install dependencies on runner
+        run: npm install --no-audit --no-fund
       - name: Run with python.exe only and a legacy code page
         shell: pwsh
         run: |
@@ -48,7 +92,21 @@ jobs:
           $env:PATH = "$pythonDir;$(Split-Path $bun);$env:SystemRoot\System32;$env:SystemRoot"
           $env:PYTHONUTF8 = '0'
           if (Get-Command python3 -ErrorAction SilentlyContinue) { throw 'python3 must be absent for this reproduction' }
+          git fetch --depth=1 origin 2f5980251340cf35fec7f791982850a2e0118599
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $original = git show '2f5980251340cf35fec7f791982850a2e0118599:src/services/work-view/refresh-task.ts'
+          [IO.File]::WriteAllText((Join-Path $env:GITHUB_WORKSPACE 'src/services/work-view/refresh-task.ts'), ($original -join "`n"))
+          & $bun test tests/work-view/auto-refresh.test.ts --test-name-pattern 'refreshes goals with python when python3 is not installed' 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/baseline.log"
+          $baselineExit = $LASTEXITCODE
+          git restore src/services/work-view/refresh-task.ts
+          if ($baselineExit -ne 1) { throw "Expected failing regression, got $baselineExit" }
+          if (-not (Select-String -Path "$env:RUNNER_TEMP/baseline.log" -SimpleMatch 'Executable not found: python3')) { throw 'Regression did not fail for missing python3' }
           & $bun test tests/work-view/python.test.ts tests/work-view/auto-refresh.test.ts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $bun test tests/work-view/skill-scripts-python.test.ts --test-name-pattern 'UTF-8|leaves text the owner marked private'
           exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: baseline-windows
+          path: ${{ runner.temp }}/baseline.log
