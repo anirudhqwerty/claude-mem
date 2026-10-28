@@ -33,15 +33,60 @@ jobs:
           set -e
           cat evidence/regression.log
           echo "$result" > evidence/exit-code.txt
-          if [ '${{ inputs.phase || 'baseline' }}' = baseline ]; then
+          if [ '${{ inputs.phase || 'candidate' }}' = baseline ]; then
             test "$result" = 1
             grep -F '(fail) Work View startup ordering > does not construct Work View' evidence/regression.log
             grep -F '5 tests across 1 file' evidence/regression.log
           else
             test "$result" = 0
           fi
+      - name: Related Windows lifecycle checks
+        if: inputs.phase != 'baseline'
+        shell: bash
+        run: |
+          set -o pipefail
+          bun test tests/work-view/auto-refresh.test.ts tests/services/worker-shutdown-sequence.test.ts tests/services/worker-pending-session-resume.test.ts tests/server/ready-stream.test.ts --timeout 30000 2>&1 | tee evidence/related.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: windows-5127-${{ inputs.phase }}
           path: evidence/
+  linux:
+    needs: windows
+    if: inputs.phase != 'baseline'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.3'
+      - run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Regression and relevant suites
+        run: |
+          mkdir -p evidence
+          set -o pipefail
+          bun test tests/services/worker-work-view-init.test.ts tests/work-view/ tests/worker/http/routes/work-view-routes.test.ts tests/worker/http/routes/work-view-rules-routes.test.ts tests/worker/http/routes/work-view-focus-routes.test.ts tests/worker/http/routes/work-view-suggestions-routes.test.ts tests/worker/http/routes/work-view-agent-finished-routes.test.ts tests/services/worker-shutdown-sequence.test.ts tests/services/worker-pending-session-resume.test.ts tests/server/ready-stream.test.ts tests/backup/restore-swap.test.ts --timeout 30000 2>&1 | tee evidence/tests.log
+      - name: Typecheck
+        run: npm run typecheck 2>&1 | tee evidence/typecheck.log
+      - name: Repository lint and test lane checks
+        run: |
+          npm run lint:hook-io
+          npm run lint:spawn-env
+          npm run test:lanes:check
+          git diff --check
+      - name: Build release bundles
+        run: npm run build 2>&1 | tee evidence/build.log
+      - name: Verify built bundles
+        run: bun test tests/infrastructure/version-consistency.test.ts tests/infrastructure/committed-plugin-bundles.test.ts tests/infrastructure/worker-bundle-self-contained.test.ts --timeout 30000 2>&1 | tee evidence/bundles.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-5127
+          path: |
+            evidence/
+            plugin/scripts/worker-service.cjs
+            plugin/scripts/worker-service.cjs.map
