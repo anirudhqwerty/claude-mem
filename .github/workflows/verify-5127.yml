@@ -1,0 +1,45 @@
+name: Verify worker initialization 5127
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        type: choice
+        options: [baseline, candidate]
+        required: true
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.3'
+      - run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Focused initialization regression
+        shell: bash
+        run: |
+          mkdir -p evidence
+          git rev-parse HEAD | tee evidence/revision.txt
+          bun --version | tee evidence/bun.txt
+          set +e
+          bun test tests/services/worker-work-view-init.test.ts --timeout 30000 > evidence/regression.log 2>&1
+          result=$?
+          set -e
+          cat evidence/regression.log
+          echo "$result" > evidence/exit-code.txt
+          if [ '${{ inputs.phase }}' = baseline ]; then
+            test "$result" = 1
+            grep -F '(fail) Work View startup ordering > does not construct Work View' evidence/regression.log
+            grep -F '5 tests across 1 file' evidence/regression.log
+          else
+            test "$result" = 0
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-5127-${{ inputs.phase }}
+          path: evidence/
