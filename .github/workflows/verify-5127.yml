@@ -1,5 +1,7 @@
 name: Verify worker initialization 5127
 on:
+  push:
+    branches: [verify/5127-worker-init]
   workflow_dispatch:
     inputs:
       phase:
@@ -31,7 +33,7 @@ jobs:
           set -e
           cat evidence/regression.log
           echo "$result" > evidence/exit-code.txt
-          if [ '${{ inputs.phase }}' = baseline ]; then
+          if [ '${{ inputs.phase || 'baseline' }}' = baseline ]; then
             test "$result" = 1
             grep -F '(fail) Work View startup ordering > does not construct Work View' evidence/regression.log
             grep -F '5 tests across 1 file' evidence/regression.log
